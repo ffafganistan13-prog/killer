@@ -20,6 +20,8 @@ import random
 import string
 import threading
 import sqlite3
+import http.server
+import socketserver
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
@@ -58,10 +60,10 @@ from telethon.tl.types import (
 
 # ==================== تنظیمات ====================
 class Config:
-    # API اطلاعات
-    API_ID = 2040  # جایگزین کن
-    API_HASH = "b18441a1ff607e10a989891a5462e627"  # جایگزین کن
-    SESSION_NAME = "ultra_self_bot"
+    # API اطلاعات - از متغیرهای محیطی استفاده می‌کنیم
+    API_ID = int(os.environ.get("API_ID", "2040"))
+    API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
+    SESSION_NAME = os.environ.get("SESSION_NAME", "ultra_self_bot")
     
     # تنظیمات پیشرفته
     MAX_BANNERS = 50
@@ -73,6 +75,9 @@ class Config:
     DATABASE_PATH = "selfbot.db"
     BACKUP_DIR = "backups/"
     LOGS_DIR = "logs/"
+    
+    # پورت HTTP برای Health Check
+    HTTP_PORT = int(os.environ.get("PORT", "8000"))
     
     # ایموجی‌های پیشفرض
     EMOJIS = {
@@ -114,6 +119,96 @@ class Config:
         WHITE = "\033[97m"
         RESET = "\033[0m"
         BOLD = "\033[1m"
+
+# ==================== HTTP Server برای Health Check ====================
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    """Handler ساده برای پاسخ به درخواست‌های Health Check"""
+    
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            response = {
+                "status": "ok",
+                "service": "telegram-selfbot",
+                "timestamp": time.time()
+            }
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            html = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Telegram Selfbot</title>
+                <style>
+                    body { 
+                        font-family: Arial, sans-serif; 
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        text-align: center;
+                        padding: 50px;
+                    }
+                    .container {
+                        max-width: 800px;
+                        margin: 0 auto;
+                        background: rgba(255, 255, 255, 0.1);
+                        padding: 30px;
+                        border-radius: 15px;
+                        backdrop-filter: blur(10px);
+                    }
+                    h1 { 
+                        color: white; 
+                        font-size: 3em;
+                        margin-bottom: 20px;
+                    }
+                    .status {
+                        font-size: 1.2em;
+                        margin: 20px 0;
+                        padding: 15px;
+                        background: rgba(0, 0, 0, 0.2);
+                        border-radius: 10px;
+                    }
+                    .emoji { font-size: 2em; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🤖 Telegram Selfbot</h1>
+                    <div class="status">
+                        <p class="emoji">✅</p>
+                        <p>سلف بات تلگرام در حال اجرا است</p>
+                        <p><small>Health Check Endpoint: <code>/health</code></small></p>
+                    </div>
+                    <p>این صفحه برای بررسی سلامت سرویس در Koyeb ایجاد شده است.</p>
+                </div>
+            </body>
+            </html>
+            """
+            self.wfile.write(html.encode())
+    
+    def log_message(self, format, *args):
+        """غیرفعال کردن لاگ HTTP در ترمینال"""
+        pass
+
+def start_http_server(port=8000):
+    """شروع سرور HTTP در یک ترد جداگانه"""
+    def run_server():
+        try:
+            with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
+                print(f"{Config.Colors.GREEN}✅ HTTP Server شروع شد روی پورت {port}{Config.Colors.RESET}")
+                print(f"{Config.Colors.CYAN}🌐 Health Check: http://localhost:{port}/health{Config.Colors.RESET}")
+                httpd.serve_forever()
+        except Exception as e:
+            print(f"{Config.Colors.RED}❌ خطا در شروع HTTP Server: {e}{Config.Colors.RESET}")
+    
+    # شروع سرور در ترد جداگانه
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    return server_thread
 
 # ==================== دیتابیس ====================
 class Database:
@@ -1053,7 +1148,7 @@ tg://user?id={me.id}
             ("همیشه جلو می‌رود اما هرگز به جایی نمی‌رسد؟", "ساعت")
         ]
         
-        riddle, answer = random.choice(riddles)
+        riddle, answer = random.choice(ridles)
         
         # 10 ثانیه تأخیر برای جواب
         await event.reply(f"🤔 **معما**\n\n{riddle}")
@@ -1310,7 +1405,40 @@ class UltraSelfBot:
                 Config.API_HASH
             )
             
-            await self.client.start()
+            # شروع HTTP Server برای Health Check
+            print(f"{Config.Colors.GREEN}🚀 شروع HTTP Server برای Health Check...{Config.Colors.RESET}")
+            start_http_server(Config.HTTP_PORT)
+            
+            # ایجاد session اگر وجود ندارد
+            session_file = f"{Config.SESSION_NAME}.session"
+            if not os.path.exists(session_file):
+                print(f"{Config.Colors.YELLOW}⚠️ فایل session یافت نشد: {session_file}{Config.Colors.RESET}")
+                print(f"{Config.Colors.YELLOW}📱 لطفاً با استفاده از QR Code یا دستی وارد شوید{Config.Colors.RESET}")
+                
+                # روش‌های مختلف لاگین
+                print(f"{Config.Colors.CYAN}🔧 روش‌های ورود:{Config.Colors.RESET}")
+                print("1. استفاده از QR Code")
+                print("2. وارد کردن شماره تلفن و کد")
+                
+                # امتحان QR Code اول
+                try:
+                    print(f"{Config.Colors.YELLOW}🔐 تلاش برای ورود با QR Code...{Config.Colors.RESET}")
+                    await self.client.connect()
+                    
+                    if not await self.client.is_user_authorized():
+                        # QR Code
+                        qr_login = await self.client.qr_login()
+                        print(f"{Config.Colors.GREEN}📱 لطفاً QR Code زیر را در تلگرام اسکن کنید:{Config.Colors.RESET}")
+                        print(f"\n{qr_login.url}")
+                        await qr_login.wait()
+                except Exception as qr_error:
+                    print(f"{Config.Colors.RED}❌ خطا در ورود با QR: {qr_error}{Config.Colors.RESET}")
+                    print(f"{Config.Colors.YELLOW}🔄 استفاده از روش دستی...{Config.Colors.RESET}")
+                    await self.client.start()
+            else:
+                print(f"{Config.Colors.GREEN}✅ فایل session موجود است. اتصال...{Config.Colors.RESET}")
+                await self.client.start()
+            
             self.is_running = True
             
             me = await self.client.get_me()
@@ -1332,6 +1460,13 @@ class UltraSelfBot:
             
             # اطلاع‌رسانی شروع
             await self.notify_startup()
+            
+            # چاپ اطلاعات سلامت
+            print(f"{Config.Colors.GREEN}✅ سلف بات با موفقیت شروع شد!{Config.Colors.RESET}")
+            print(f"{Config.Colors.CYAN}👤 کاربر: @{me.username}{Config.Colors.RESET}")
+            print(f"{Config.Colors.CYAN}📱 شماره: {me.phone}{Config.Colors.RESET}")
+            print(f"{Config.Colors.CYAN}🌐 Health Check: http://localhost:{Config.HTTP_PORT}/health{Config.Colors.RESET}")
+            print(f"{Config.Colors.CYAN}📊 وضعیت: در حال اجرا...{Config.Colors.RESET}")
             
             await self.client.run_until_disconnected()
             
@@ -1488,157 +1623,40 @@ class UltraSelfBot:
         
         self.logger.info("سلف بات متوقف شد")
 
-# ==================== منوی ترمینال ====================
-def show_banner():
-    banner = f"""
-{Config.Colors.CYAN}
-╔══════════════════════════════════════════════════════════╗
-║                                                          ║
-║  ░█▀▀░█▀█░█▀▄░█▀▀░▀█▀░█▀█░█▀▀  ░█▀▀░▀█▀░█▀█░█▀▀░█░█     ║
-║  ░█▀▀░█░█░█░█░█▀▀░░█░░█░█░█░█  ░▀▀█░░█░░█░█░█▀▀░▄▀▄     ║
-║  ░▀░░░▀▀▀░▀▀░░▀▀▀░░▀░░▀▀▀░▀▀▀  ░▀▀▀░░▀░░▀▀▀░▀▀▀░▀░▀     ║
-║                                                          ║
-║                  v2.0 - 700+ خط کد                      ║
-║              سلف بات حرفه‌ای فارسی                     ║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
-{Config.Colors.RESET}
-    """
-    print(banner)
-
-def terminal_menu():
-    show_banner()
-    
-    print(f"{Config.Colors.YELLOW}🔧 منوی مدیریت ترمینال{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}1. شروع سلف بات{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}2. مدیریت دستورات سفارشی{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}3. مشاهده لاگ‌ها{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}4. پشتیبان‌گیری{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}5. تنظیمات{Config.Colors.RESET}")
-    print(f"{Config.Colors.CYAN}6. خروج{Config.Colors.RESET}")
-    
-    choice = input(f"\n{Config.Colors.GREEN}انتخاب شما: {Config.Colors.RESET}")
-    return choice
-
-async def manage_custom_commands():
-    db = Database()
-    
-    while True:
-        print(f"\n{Config.Colors.YELLOW}📝 مدیریت دستورات سفارشی{Config.Colors.RESET}")
-        print("1. افزودن دستور جدید")
-        print("2. حذف دستور")
-        print("3. مشاهده همه دستورات")
-        print("4. بازگشت")
-        
-        choice = input(f"\n{Config.Colors.GREEN}انتخاب: {Config.Colors.RESET}")
-        
-        if choice == '1':
-            cmd = input("دستور: ")
-            response = input("پاسخ: ")
-            if db.add_custom_command(cmd, response):
-                print(f"{Config.Colors.GREEN}✅ دستور اضافه شد{Config.Colors.RESET}")
-            else:
-                print(f"{Config.Colors.RED}❌ دستور تکراری است{Config.Colors.RESET}")
-        
-        elif choice == '2':
-            cmd = input("دستور برای حذف: ")
-            if db.remove_custom_command(cmd):
-                print(f"{Config.Colors.GREEN}✅ دستور حذف شد{Config.Colors.RESET}")
-            else:
-                print(f"{Config.Colors.RED}❌ دستور یافت نشد{Config.Colors.RESET}")
-        
-        elif choice == '3':
-            commands = db.get_all_commands()
-            if commands:
-                print(f"\n{Config.Colors.CYAN}📋 دستورات سفارشی:{Config.Colors.RESET}")
-                for cmd in commands:
-                    print(f"• {cmd['command']}: {cmd['response'][:50]}...")
-            else:
-                print(f"{Config.Colors.YELLOW}📭 هیچ دستور سفارشی وجود ندارد{Config.Colors.RESET}")
-        
-        elif choice == '4':
-            break
-
 # ==================== اجرای اصلی ====================
 async def main():
     bot = UltraSelfBot()
     
-    while True:
-        choice = terminal_menu()
-        
-        if choice == '1':
-            print(f"{Config.Colors.GREEN}🚀 در حال شروع سلف بات...{Config.Colors.RESET}")
-            print(f"{Config.Colors.YELLOW}📝 نکته: برای توقف، Ctrl+C بزنید{Config.Colors.RESET}")
-            try:
-                await bot.start()
-            except KeyboardInterrupt:
-                print(f"\n{Config.Colors.YELLOW}⏹️ توقف توسط کاربر{Config.Colors.RESET}")
-                await bot.stop()
-            except Exception as e:
-                print(f"{Config.Colors.RED}❌ خطا: {e}{Config.Colors.RESET}")
-        
-        elif choice == '2':
-            await manage_custom_commands()
-        
-        elif choice == '3':
-            print(f"\n{Config.Colors.CYAN}📄 مشاهده لاگ‌ها:{Config.Colors.RESET}")
-            if os.path.exists(f"{Config.LOGS_DIR}/selfbot.log"):
-                with open(f"{Config.LOGS_DIR}/selfbot.log", 'r', encoding='utf-8') as f:
-                    lines = f.readlines()[-50:]  # 50 خط آخر
-                    for line in lines:
-                        print(line.strip())
-            else:
-                print(f"{Config.Colors.YELLOW}📭 فایل لاگ وجود ندارد{Config.Colors.RESET}")
-        
-        elif choice == '4':
-            print(f"{Config.Colors.GREEN}📦 در حال ایجاد پشتیبان...{Config.Colors.RESET}")
-            await bot.auto_backup()
-            print(f"{Config.Colors.GREEN}✅ پشتیبان ایجاد شد{Config.Colors.RESET}")
-        
-        elif choice == '5':
-            print(f"\n{Config.Colors.YELLOW}⚙️ تنظیمات:{Config.Colors.RESET}")
-            print("1. تغییر API_ID و API_HASH")
-            print("2. تنظیمات پیشرفته")
-            print("3. بازگشت")
-            
-            sub_choice = input(f"\n{Config.Colors.GREEN}انتخاب: {Config.Colors.RESET}")
-            
-            if sub_choice == '1':
-                Config.API_ID = int(input("API_ID جدید: "))
-                Config.API_HASH = input("API_HASH جدید: ")
-                print(f"{Config.Colors.GREEN}✅ تنظیمات ذخیره شد{Config.Colors.RESET}")
-        
-        elif choice == '6':
-            print(f"{Config.Colors.MAGENTA}👋 خداحافظ!{Config.Colors.RESET}")
-            break
-        
-        else:
-            print(f"{Config.Colors.RED}❌ انتخاب نامعتبر{Config.Colors.RESET}")
+    print(f"{Config.Colors.CYAN}")
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║                                                          ║")
+    print("║  ░█▀▀░█▀█░█▀▄░█▀▀░▀█▀░█▀█░█▀▀  ░█▀▀░▀█▀░█▀█░█▀▀░█░█     ║")
+    print("║  ░█▀▀░█░█░█░█░█▀▀░░█░░█░█░█░█  ░▀▀█░░█░░█░█░█▀▀░▄▀▄     ║")
+    print("║  ░▀░░░▀▀▀░▀▀░░▀▀▀░░▀░░▀▀▀░▀▀▀  ░▀▀▀░░▀░░▀▀▀░▀▀▀░▀░▀     ║")
+    print("║                                                          ║")
+    print("║                  v2.0 - 700+ خط کد                      ║")
+    print("║              سلف بات حرفه‌ای فارسی                     ║")
+    print("║                    نسخه Cloud-Ready                     ║")
+    print("║                                                          ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print(f"{Config.Colors.RESET}")
+    
+    try:
+        print(f"{Config.Colors.GREEN}🚀 در حال شروع سلف بات برای Koyeb...{Config.Colors.RESET}")
+        print(f"{Config.Colors.YELLOW}📝 نکته: برای توقف، Ctrl+C بزنید{Config.Colors.RESET}")
+        await bot.start()
+    except KeyboardInterrupt:
+        print(f"\n{Config.Colors.YELLOW}⏹️ توقف توسط کاربر{Config.Colors.RESET}")
+        await bot.stop()
+    except Exception as e:
+        print(f"{Config.Colors.RED}❌ خطا: {e}{Config.Colors.RESET}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     # ایجاد پوشه‌های لازم
     os.makedirs(Config.BACKUP_DIR, exist_ok=True)
     os.makedirs(Config.LOGS_DIR, exist_ok=True)
     
-    # بررسی نصب Telethon
-    try:
-        import telethon
-    except ImportError:
-        print(f"{Config.Colors.RED}❌ Telethon نصب نیست!{Config.Colors.RESET}")
-        install = input("آیا نصب شود؟ (y/n): ")
-        if install.lower() == 'y':
-            import subprocess
-            subprocess.check_call(["pip", "install", "telethon"])
-            print(f"{Config.Colors.GREEN}✅ Telethon نصب شد{Config.Colors.RESET}")
-        else:
-            exit()
-    
     # اجرای برنامه
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print(f"\n{Config.Colors.YELLOW}⏹️ برنامه متوقف شد{Config.Colors.RESET}")
-    except Exception as e:
-        print(f"{Config.Colors.RED}❌ خطای غیرمنتظره: {e}{Config.Colors.RESET}")
-        import traceback
-        traceback.print_exc()
+    asyncio.run(main())
